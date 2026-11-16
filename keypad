@@ -1,0 +1,126 @@
+#!/bin/zsh
+# Helper for the Vaydeer JP-1011: show and change the layout without the vendor app.
+#
+#   keypad                  menu
+#   keypad show [layer]     layout as a 3x3 grid
+#   keypad layers           layers with names, active one marked
+#   keypad next             switch to the next layer
+#   keypad layer N          make layer N active
+#   keypad rename N "Name"  rename a layer (8 characters at most)
+#   keypad test             key test window
+#   keypad <command ...>    any other vaydeer command (info, set, backup, restore, keys)
+#
+# Backups go to ./my-backups next to this script (ignored by git: they can hold private data).
+
+set -u
+DIR="${0:A:h}"
+TOOL="$DIR/vaydeer"
+VIEW="$DIR/keyview"
+SAVE="$DIR/my-backups"
+mkdir -p "$SAVE"
+
+# Build again when the program is missing or the source is newer.
+build() {
+  local src="$1" bin="$2"
+  if [[ ! -x "$bin" || "$src" -nt "$bin" ]]; then
+    echo "Building ${bin:t} …"
+    swiftc -O "$src" -o "$bin" || { echo "Build failed."; exit 1; }
+  fi
+}
+build "$DIR/vaydeer.swift" "$TOOL"
+
+v() { (cd "$SAVE" && "$TOOL" "$@") }
+
+# Next layer (wraps to 0 after the last one).
+next_layer() {
+  local line active count
+  line=$(v info | sed -n 2p) || return
+  active=${${line#*activeLayer=}%% *}
+  count=${${line#*layerCount=}%% *}
+  v layer $(( (active + 1) % count )) && v layers
+}
+
+if (( $# > 0 )); then
+  case "$1" in
+    test) build "$DIR/keyview.swift" "$VIEW"; exec "$VIEW" ;;
+    next) next_layer; exit $? ;;
+  esac
+  v "$@"; exit $?
+fi
+
+ask() { local answer; read -r "answer?$1"; print -r -- "$answer"; }
+confirmed() { [[ "$(ask "$1 [y/N] ")" == [yYjJ]* ]]; }
+
+change_key() {
+  v show || return
+  local layer key keys label
+  layer=$(ask "Layer (number): ")
+  key=$(ask "Key 0–8 (row by row from top left): ")
+  echo "Shortcut, e.g. cmd+c, cmd+shift+4, ctrl+opt+left, f5 — 'none' = empty, '?' = all names"
+  keys=$(ask "Shortcut: ")
+  if [[ "$keys" == "?" ]]; then v keys; keys=$(ask "Shortcut: "); fi
+  [[ -z "$keys" ]] && { echo "Cancelled."; return; }
+  label=$(ask "Label (12 characters at most, empty = shortcut): ")
+  local item="$key=$keys"
+  [[ -n "$label" ]] && item="$item:$label"
+  echo "Write layer $layer, key $key → $keys${label:+ ($label)}"
+  confirmed "Go ahead?" || { echo "Nothing written."; return; }
+  v set "layer=$layer" "$item"
+}
+
+switch_layer() {
+  v layers || return
+  local layer; layer=$(ask "Which layer should be active? (number, empty = next) ")
+  if [[ -z "$layer" ]]; then next_layer; else v layer "$layer" && v layers; fi
+}
+
+rename_layer() {
+  v layers || return
+  local layer name
+  layer=$(ask "Rename which layer? ")
+  [[ -z "$layer" ]] && { echo "Cancelled."; return; }
+  name=$(ask "New name (8 characters at most): ")
+  [[ -z "$name" ]] && { echo "Cancelled."; return; }
+  echo "Note: the whole layer is written again with its keys (a backup is made first)."
+  confirmed "Rename layer $layer to \"$name\"?" || { echo "Nothing written."; return; }
+  v rename "$layer" "$name"
+}
+
+restore() {
+  local files=("$SAVE"/*.json(N.om))
+  (( ${#files} )) || { echo "No backups in $SAVE"; return; }
+  local i=1
+  for f in "${files[@]}"; do echo "  $i) ${f:t}"; (( i++ )); done
+  local pick; pick=$(ask "Number: ")
+  [[ "$pick" == <-> && pick -ge 1 && pick -le ${#files} ]] || { echo "Cancelled."; return; }
+  local layer; layer=$(ask "Only one layer? (number, empty = all): ")
+  echo "Note: layers with program, text or macro keys cannot be written; the tool then stops without changes."
+  confirmed "Restore from ${files[$pick]:t}?" || { echo "Nothing written."; return; }
+  v restore "${files[$pick]}" ${layer:+$layer}
+}
+
+while true; do
+  echo ""
+  echo "Vaydeer keypad"
+  echo "  1) Show layout"
+  echo "  2) Change a key"
+  echo "  3) Switch layer"
+  echo "  4) Rename a layer"
+  echo "  5) Key test (shows what the Mac receives)"
+  echo "  6) Make a backup"
+  echo "  7) Restore from a backup"
+  echo "  8) Key names"
+  echo "  q) Quit"
+  case "$(ask "> ")" in
+    1) v show ;;
+    2) change_key ;;
+    3) switch_layer ;;
+    4) rename_layer ;;
+    5) build "$DIR/keyview.swift" "$VIEW"; "$VIEW" ;;
+    6) v backup "keypad-$(date +%Y-%m-%d-%H%M%S).json" ;;
+    7) restore ;;
+    8) v keys ;;
+    q|Q|"") exit 0 ;;
+    *) echo "?" ;;
+  esac
+done

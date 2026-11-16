@@ -1,5 +1,10 @@
 vaydeer
+keyview
 keytest
 keytest.log
 vaydeer-backup-*.json
 .DS_Store
+
+# Backups of the keypad can hold private data (program paths, URLs, text macros).
+my-backups/
+*.local.json
